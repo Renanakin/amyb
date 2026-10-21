@@ -1,0 +1,6 @@
+# PostgreSQL para desarrollo con Node fuera de Docker.
+# Uso: docker compose -f docker-compose.yml -f compose.dev.yml up -d postgres
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"

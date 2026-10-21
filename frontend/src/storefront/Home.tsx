@@ -1,0 +1,20 @@
+import React from 'react';
+import { Link } from 'react-router-dom';
+import { businesses, categories, useStore } from './data';
+import { CatalogStatus, Icon, ProductGrid } from './ui';
+
+export function BusinessGrid(){return <div className="business-grid">{businesses.map(b=><Link key={b.id} className="business-card" to={'/catalogo?rubro='+b.id}><Icon name={b.icon}/><h3>{b.name}</h3><p>{b.sub}</p><span className="text-link">Explorar insumos <Icon name="arrow"/></span></Link>)}</div>;}
+export function Home(){
+ const {products,loading,error}=useStore();
+ const offers=products.filter(p=>p.isOffer).slice(0,5);
+ const selection=(offers.length?offers:products).slice(0,5);
+ const pantry=products.filter(p=>p.category==='abarrotes').slice(0,5);
+ return <div className="container">
+ <section className="hero-layout" aria-label="Destacados de Amyb"><div className="hero-main"><div className="hero-copy"><span className="eyebrow">CERCA DE TI, CERCA DE TU COCINA</span><h1>Todo para tu cocina.<br/>Y para tu negocio.</h1><p>Tus productos de siempre y nuevos favoritos, en un solo lugar.</p><Link className="button" to="/catalogo">Explorar productos <Icon name="arrow"/></Link></div></div><Link className="campaign" to="/catalogo?rubro=pizza" aria-label="Ver insumos para pizzería"><img src="/storefront/pizza.jpg" alt="Productos para Pizza" width="586" height="760"/><span className="campaign-label">Para tu pizzería <Icon name="arrow"/></span></Link><Link className="campaign" to="/catalogo?rubro=sushi" aria-label="Ver insumos para Sushi"><img src="/storefront/sushi.jpg" alt="Productos para Sushi" width="586" height="760"/><span className="campaign-label">Para tu sushi <Icon name="arrow"/></span></Link></section>
+ <div className="benefits"><div className="benefit"><Icon name="truck"/><div><strong>Despacho y retiro</strong><small>Encuentra la opción para ti</small></div></div><div className="benefit"><Icon name="box"/><div><strong>Para el hogar y tu negocio</strong><small>Productos en distintos formatos</small></div></div><div className="benefit"><Icon name="leaf"/><div><strong>Tu distribuidora de siempre</strong><small>Amyb, en Temuco</small></div></div></div>
+ <section className="section" aria-labelledby="categories-heading"><div className="section-heading"><h2 id="categories-heading">¿Qué necesitas hoy?</h2><Link className="text-link" to="/catalogo">Ver todo <Icon name="arrow"/></Link></div><div className="category-grid">{categories.map(c=><Link className="category-tile" key={c.id} to={'/catalogo'+(c.id==='todos'?'':'?categoria='+c.id)}><img src={'/storefront/'+c.image} alt="" width="60" height="60"/><span>{c.name}</span><Icon name="arrow"/></Link>)}</div></section>
+ <section className="section" aria-labelledby="selection-heading"><div className="section-heading"><div><span className="eyebrow">PRODUCTOS PARA DESCUBRIR</span><h2 id="selection-heading">Tu próxima compra empieza aquí</h2><p>Una selección para tu hogar y para tu cocina.</p></div><Link className="text-link" to={offers.length?'/catalogo?ofertas=1':'/catalogo'}>Ver selección <Icon name="arrow"/></Link></div>{loading||error||!products.length?<CatalogStatus/>:<ProductGrid products={selection} home/>}</section>
+ <section className="section"><div className="section-heading"><div><h2>Ingredientes para tu negocio</h2><p>Encuentra lo que necesitas según tu especialidad.</p></div></div><BusinessGrid/></section>
+ {!!pantry.length&&<section className="section"><div className="section-heading"><div><h2>Los esenciales de tu despensa</h2><p>Formatos y sabores para tener a mano.</p></div><Link className="text-link" to="/catalogo?categoria=abarrotes">Ver despensa <Icon name="arrow"/></Link></div><ProductGrid products={pantry} home/></section>}
+ <section className="local-banner"><div><span className="eyebrow">AMYB DISTRIBUIDORA</span><h2>Estamos cerca de tu cocina.</h2><p>Conoce las opciones de compra, despacho y retiro en Temuco.</p></div><Link className="button secondary" to="/ayuda">Conocer más <Icon name="arrow"/></Link></section></div>;
+}

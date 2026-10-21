@@ -1,0 +1,619 @@
+// =====================================================================
+// Amyb Distribuidora — Esquema de base de datos (PostgreSQL + Prisma)
+// =====================================================================
+// Convencion de nombres: tablas y columnas en snake_case (convencion Chile
+// y compatible con reporting SQL). Prisma las expone en camelCase en TS.
+// =====================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------
+// PRODUCTOS
+// ---------------------------------------------------------------------
+model Product {
+  id       String @id @default(cuid())
+  // SKU es el codigo de negocio visible al cliente (ej. LAC-GB-1360)
+  sku      String @unique @map("sku")
+  name     String
+  category String
+  format   String
+  description String
+
+  // Precio en CLP pesos enteros (Chile no usa centavos en la practica)
+  price          Int
+  originalPrice  Int?    @map("original_price")
+  discountPercent Int?   @map("discount_percent")
+  isOffer        Boolean @default(false) @map("is_offer")
+
+  // Stock fisico disponible. Se descuenta de forma transaccional al confirmar el pago.
+  stock           Int    @default(0)
+  minWholesaleQty Int    @default(1) @map("min_wholesale_qty")
+
+  image String?
+  badge String?
+  brand String
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Copia sin acentos del nombre y del SKU, para que la busqueda
+  // encuentre "jalapeno" aunque el producto se llame "Jalapeño".
+  // Se rellena en el seed y en el panel admin.
+  nameNormalized String? @map("name_normalized")
+  skuNormalized  String? @map("sku_normalized")
+
+  orderItems    OrderItem[]
+  priceTiers    PriceTier[]
+  cartItems     CartItem[]
+  warehouseStocks WarehouseStock[]
+  stockMovements  StockMovement[]
+
+  @@index([category])
+  @@index([brand])
+  @@index([isOffer])
+  @@map("products")
+}
+
+// ---------------------------------------------------------------------
+// PRECIOS POR VOLUMEN (B2B / HORECA)
+// ---------------------------------------------------------------------
+// El prototipo cobraba lo mismo a 1 unidad que a 500, perdiendo margen.
+// Una unidad puede tener varias escalas: "desde 20 un. el precio baja a X".
+model PriceTier {
+  id        String @id @default(cuid())
+  productId String @map("product_id")
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  // Cantidad minima a partir de la cual aplica este precio
+  minQty    Int @map("min_qty")
+  unitPrice Int @map("unit_price")
+
+  @@unique([productId, minQty])
+  @@map("price_tiers")
+}
+
+// ---------------------------------------------------------------------
+// ZONAS DE DESPACHO
+// ---------------------------------------------------------------------
+model ShippingZone {
+  id                   String @id @default(cuid())
+  name                 String
+  comuna                String
+  cost                 Int
+  estimatedHours       String @map("estimated_hours")
+  freeShippingThreshold Int   @default(0) @map("free_shipping_threshold")
+  isActive             Boolean @default(true) @map("is_active")
+
+  // Que bodega despacha esta zona. El cliente nunca lo elige: lo asigna
+  // el sistema para que el pedido salga del lugar mas cercano con stock.
+  warehouseId String? @map("warehouse_id")
+  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id], onDelete: SetNull)
+
+  @@map("shipping_zones")
+}
+
+// ---------------------------------------------------------------------
+// BODEGAS (MULTI-BODEGA AUTONOMA)
+// ---------------------------------------------------------------------
+// El contrato exige operar sin ERP, asi que la web hace de sistema de
+// inventario. Eso obliga a que el stock viva POR BODEGA y no en el
+// producto: una unidad en Padre Las Casas no es lo mismo que una unidad
+// en Temuco.
+//
+// Quien elige la bodega NO es el cliente: es el sistema, segun la zona de
+// despacho. El cliente ve su zona y su costo; la bodega es un detalle
+// interno de la operacion.
+
+model Warehouse {
+  id       String @id
+  code     String @unique
+  name     String
+  address  String
+  lat      Float?
+  lng      Float?
+  isActive Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  stocks    WarehouseStock[]
+  movements StockMovement[]
+  zones     ShippingZone[]
+  orders    Order[]
+
+  @@map("warehouses")
+}
+
+// Stock de un producto en una bodega. La cantidad DISPONIBLE se calcula
+// como quantity - reserved: lo reservado son unidades comprometidas en
+// carritos que todavia no se cobraron.
+model WarehouseStock {
+  id          String    @id @default(cuid())
+  warehouseId String    @map("warehouse_id")
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  productId   String    @map("product_id")
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  quantity Int @default(0)
+  reserved Int @default(0)
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([warehouseId, productId])
+  @@index([productId])
+  @@map("warehouse_stocks")
+}
+
+// ---------------------------------------------------------------------
+// KARDEX: libro de movimientos de inventario
+// ---------------------------------------------------------------------
+// Append-only. Un movimiento NO se edita ni se borra nunca: si uno quedo
+// mal, se corrige con un movimiento de ajuste que lo referencia. Por eso
+// cada fila guarda el saldo que dejo despues de aplicarse, que es lo que
+// hace auditable el libro.
+//
+//   entrada    compra a proveedor, devolucion de cliente
+//   salida     venta, merma, consumo interno
+//   ajuste     correccion con motivo explícito
+//   traspaso   movimiento entre bodegas (dos filas: una salida y una entrada)
+
+model StockMovement {
+  id          String    @id @default(cuid())
+  warehouseId String    @map("warehouse_id")
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  productId   String    @map("product_id")
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  orderId     String?   @map("order_id")
+  order       Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  // entrada | salida | ajuste | traspaso_entrada | traspaso_salida
+  type        String
+  // Positivo suma, negativo resta.
+  quantity    Int
+  // Saldo que quedo en la bodega para ese producto tras el movimiento.
+  balanceAfter Int      @map("balance_after")
+  reason      String
+  // Referencia externa: factura del proveedor, guia de despacho, etc.
+  reference   String?
+  userId      String?   @map("user_id")
+  // Movimiento que corrige a este, si es el caso.
+  correctsId  String?   @map("corrects_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([warehouseId, productId, createdAt])
+  @@index([productId, createdAt])
+  @@index([orderId])
+  @@map("stock_movements")
+}
+
+// ---------------------------------------------------------------------
+// CLIENTES / USUARIOS
+// ---------------------------------------------------------------------
+model User {
+  id       String @id @default(cuid())
+  email    String @unique
+  // Hash bcrypt. El password en texto plano NUNCA se guarda.
+  passwordHash String @map("password_hash")
+  nombre   String
+  telefono String?
+  // Rol: customer (comprador) | admin (personal Amyb)
+  role     String @default("customer")
+
+  // Datos de facturacion (opcionales, se piden al emitir Factura)
+  rutEmpresa         String? @map("rut_empresa")
+  razonSocial        String? @map("razon_social")
+  giroComercial      String? @map("giro_comercial")
+  direccionTributaria String? @map("direccion_tributaria")
+  comunaTributaria    String? @map("comuna_tributaria")
+
+  // Nivel de precio asignado por el administrador. Define el descuento
+  // que el cliente ve en TODA la tienda. Si es null, el cliente ve los
+  // precios de lista publicos.
+  priceTierId String? @map("price_tier_id")
+  priceTier   PriceTierCustomer? @relation(fields: [priceTierId], references: [id], onDelete: SetNull)
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  orders         Order[]
+  addresses      Address[]
+  sessions       Session[]
+  passwordResets PasswordReset[]
+  cartItems      CartItem[]
+
+  @@index([priceTierId])
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------
+// NIVELES DE CLIENTE (PRECIOS ESPECIALES)
+// ---------------------------------------------------------------------
+// Un cliente asignado a un nivel ve un descuento sobre TODOS los
+// precios de la tienda, sin exception.
+//
+// Ejemplo: nivel "Mayorista" con 8% de descuento. El cliente ve
+// los precios con el 8% aplicado desde el catalogo, y el checkout
+// cobra exactamente eso.
+//
+// El descuento se aplica en el SERVIDOR, nunca en el navegador: si
+// el cliente viera el precio de lista y el descuento solo al pagar,
+// la diferencia de confianza seria un problema para el comprador.
+model PriceTierCustomer {
+  id          String @id @default(cuid())
+  nombre      String @unique
+  descripcion String?
+
+  // Porcentaje de descuento sobre el precio de lista. 0 = sin descuento.
+  // Se guarda con decimales: 8.5 significa 8,5%
+  descuentoPercent Float @default(0) @map("descuento_percent")
+
+  // Si el descuento aplica AL ESCALON de volumen ya calculado.
+  // false = se aplica sobre el precio de lista
+  // true  = el cliente especial ya recibio el precio de volumen y
+  //         el descuento se suma sobre ese
+  aplicaSobreEscalon Boolean @default(false) @map("aplica_sobre_escalon")
+
+  // Color de la etiqueta en el panel admin
+  color String?
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users User[]
+
+  @@map("price_tiers_customer")
+}
+
+// ---------------------------------------------------------------------
+// CONFIGURACION DE DESPACHO
+// ---------------------------------------------------------------------
+// Parametros que definen hasta donde llega la bodega. Se guardan en la
+// base, no en el codigo, para que el administrador los cambie sin
+// necesidad de un despliegue.
+model DeliveryConfig {
+  id String @id @default("default")
+
+  // Nombre del comercio en la bodega (aparece en los correos)
+  nombreLocal String @default("Amyb Distribuidora - Bodega Central") @map("nombre_local")
+
+  // Direccion de la bodega, punto de partida de todas las rutas
+  bodegaDireccion String @default("Av. Alemania 0890, Temuco") @map("bodega_direccion")
+  // Coordenadas de la bodega. Se rellenan al configurar Google Maps.
+  // Si estan vacias, el servicio usa la direccion y geocodifica sola.
+  bodegaLat Float? @map("bodega_lat")
+  bodegaLng Float? @map("bodega_lng")
+
+  // Radio maximo de entrega en KILOMETROS, en linea recta.
+  // 0 = sin restriccion (solo advertencia)
+  radioMaximoKm Float @default(30) @map("radio_maximo_km")
+
+  // Si es true, una venta a una direccion fuera del radio se BLOQUEA.
+  // Si es false, solo se avisa al cliente.
+  bloquearFueraDeRadio Boolean @default(true) @map("bloquear_fuera_de_radio")
+
+  // Precio base del despacho
+  despachoBase Int @default(2990) @map("despacho_base")
+  // Costo por cada kilometro adicional
+  costoPorKm Int @default(150) @map("costo_por_km")
+  // Desde que monto el despacho es gratis
+  despachoGratisDesde Int @default(35000) @map("despacho_gratis_desde")
+
+  // API Key de Google Maps. Vacio = el servicio usa una aproximacion
+  // sin conexion (distancia lineal, sinRoutes reales) y lo avisa.
+  googleMapsApiKey String? @map("google_maps_api_key")
+
+  isActive  Boolean  @default(true) @map("is_active")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("delivery_config")
+}
+
+// ---------------------------------------------------------------------
+// SESIONES
+// ---------------------------------------------------------------------
+// El JWT se envia en una cookie httpOnly, que el navegador envia solo y
+// el JavaScript del frontend no puede leer. Asi, un XSS no puede robar
+// la sesion. La tabla permite revocar el token en el servidor (logout
+// en todos los dispositivos) y detectar reutilizacion de token.
+model Session {
+  id        String @id @default(cuid())
+  userId    String @map("user_id")
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Hash SHA-256 del token, nunca el token en texto plano.
+  // Si alguien lee la base de datos, no puede suplantar sesiones.
+  tokenHash String @unique @map("token_hash")
+  userAgent String? @map("user_agent")
+  ipAddress String? @map("ip_address")
+
+  expiresAt DateTime @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+// ---------------------------------------------------------------------
+// RECUPERACION DE CONTRASENA
+// ---------------------------------------------------------------------
+// Se guarda el HASH del token de un solo uso, no el token.
+// El cliente recibe el token por email; el atacante que lea la base
+// de datos no puede resetear la contrasena de nadie.
+model PasswordReset {
+  id        String @id @default(cuid())
+  userId    String @map("user_id")
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("password_resets")
+}
+
+// ---------------------------------------------------------------------
+// CARRITO PERSISTENTE
+// ---------------------------------------------------------------------
+// El prototipo guardaba el carrito en localStorage, que se pierde al
+// cambiar de navegador o de celular y no sobrevive a un limpieza.
+// Con esto, el carrito sigue al usuario entre dispositivos.
+model CartItem {
+  id        String @id @default(cuid())
+  userId    String @map("user_id")
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  productId String @map("product_id")
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantity  Int
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, productId])
+  @@index([userId])
+  @@map("cart_items")
+}
+
+model Address {
+  id       String @id @default(cuid())
+  userId   String @map("user_id")
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  label        String  @default("Casa")
+  direccion    String
+  departamento String?
+  comuna        String
+  zonaId       String? @map("zona_id")
+  instrucciones String?
+  isDefault    Boolean @default(false) @map("is_default")
+
+  @@map("addresses")
+}
+
+// ---------------------------------------------------------------------
+// PEDIDOS
+// ---------------------------------------------------------------------
+model Order {
+  id     String @id @default(cuid())
+  // Identificador visible al cliente. Se genera con secuencia, no aleatorio.
+  orderNumber String @unique @map("order_number")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Que cliente compro. Nullable para permitir compras como invitado (guest checkout)
+  userId    String? @map("user_id")
+  user      User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  // Datos de contacto congelados en el momento de la compra.
+  // Se guardan aparte de User a proposito: el pedido es un documento legal
+  // y debe reflejar lo que el cliente informo, no su perfil actual.
+  customerNombre   String  @map("customer_nombre")
+  customerEmail    String  @map("customer_email")
+  customerTelefono String  @map("customer_telefono")
+
+  // Datos tributarios del DTE emitido
+  dteTipoDocumento String  @default("boleta") @map("dte_tipo_documento")
+  dteRutEmpresa    String? @map("dte_rut_empresa")
+  dteRazonSocial   String? @map("dte_razon_social")
+  dteGiroComercial String? @map("dte_giro_comercial")
+  dteDireccion     String? @map("dte_direccion")
+  dteComuna        String? @map("dte_comuna")
+
+  // Montos en CLP enteros
+  subtotal   Int
+  descuento  Int @default(0)
+  neto       Int
+  iva        Int
+  costoEnvio Int @default(0) @map("costo_envio")
+  total      Int
+
+  paymentMethod String @map("payment_method") // webpay | transferencia | contra_entrega
+
+  // paymentStatus refleja SOLO lo que confirmo la pasarela, nunca una suposicion.
+  //   pendiente  = orden creada, aun sin pagar
+  //   pagado     = commit AUTHORIZED confirmado por Transbank
+  //   rechazado  = Transbank respondio response_code distinto de 0
+  //   cancelado  = usuario volvio atras o expiro
+  //   reembolsado = se emitio anulacion
+  paymentStatus String @default("pendiente") @map("payment_status")
+
+  // orderStatus es el ciclo logistico, independiente del pago
+  //   pendiente -> pagado -> despachado -> entregado
+  orderStatus String @default("pendiente") @map("order_status")
+
+  shippingZoneId    String  @map("shipping_zone_id")
+
+  // De que bodega sale el pedido. Lo asigna el sistema segun la zona y la
+  // disponibilidad; el cliente no lo elige. Una vez pagado, no cambia:
+  // mover el pedido a otra bodega despues de despachar es imposible.
+  warehouseId    String?   @map("warehouse_id")
+  warehouse      Warehouse? @relation(fields: [warehouseId], references: [id], onDelete: SetNull)
+  shippingZoneName  String  @map("shipping_zone_name")
+  shippingAddress   String  @map("shipping_address")
+  shippingComuna    String? @map("shipping_comuna")
+  shippingNotes     String? @map("shipping_notes")
+
+  // Como se verifico la cobertura de esta entrega.
+  //
+  // Sin la API de Google la cobertura se calcula en linea recta, que
+  // SIEMPRE subestima la distancia real por camino: una venta a 28 km en
+  // linea recta puede ser 38 km de viaje. Antes no quedaba registro de
+  // eso, asi que un pedido aprobado a ciegas era indistinguible de uno
+  // verificado, y a fin de mes no se podia saber a quien se le habia
+  // cobrado de menos.
+  distanciaEntregaKm Float?  @map("distancia_entrega_km")
+  entregaVerificada  Boolean @default(false) @map("entrega_verificada")
+  entregaAproximada  Boolean @default(false) @map("entrega_aproximada")
+
+  // Datos del documento electronico emitido en FACTO
+  dteFolio       String? @map("dte_folio")
+  dteDocumentId  Int?    @map("dte_document_id")
+  dtePdfUrl      String? @map("dte_pdf_url")
+  dteXmlUrl      String? @map("dte_xml_url")
+  dteStatusLabel String? @map("dte_status_label")
+
+  // Estado real del documento en el SII, ya interpretado.
+  //
+  // FACTO responde "enviado, en proceso" y el SII contesta despues: un
+  // documento puede ser RECHAZADO horas despues de emitirlo. Sin este
+  // campo habia que leer un texto para deducirlo, y nadie lo hacia: el
+  // rechazo quedaba invisible y el cliente con una factura invalida.
+  //
+  // Valores: aprobado | observado | rechazado | procesando | reintentando
+  //         | error_permanente | desconocido
+  dteEstadoSii   String?   @map("dte_estado_sii")
+  dteEstadoSiiFecha DateTime? @map("dte_estado_sii_fecha")
+
+  // Anulacion tributaria de una venta YA facturada.
+  // En Chile una factura no se borra: se anula con una Nota de Credito
+  // (tipo 61) que la referencia. Sin estos campos no queda registro de
+  // que la anulacion ocurrio, y la venta queda "cobrada y facturada" para
+  // siempre aunque la plata se haya devuelto.
+  //
+  // While todos sean null, el pedido NO tiene nota de credito: es lo que
+  // permite detectar la cola de facturas anuladas sin su nota.
+  dteAnulacionFolio     String? @map("dte_anulacion_folio")      // folio de la NC emitida
+  dteAnulacionTipo      String? @map("dte_anulacion_tipo")       // '61' credito | '56' debito
+  dteAnulacionDocumentId Int?   @map("dte_anulacion_document_id") // document_id en FACTO
+  dteAnulacionMotivo    String? @map("dte_anulacion_motivo")     // por que se anulo
+  dteAnulacionFecha     DateTime? @map("dte_anulacion_fecha")
+
+  items        OrderItem[]
+  transactions WebpayTransaction[]
+  stockMovements  StockMovement[]
+  emails       EmailLog[]
+
+  @@index([createdAt])
+  @@index([paymentStatus])
+  @@index([orderStatus])
+  @@map("orders")
+}
+
+model OrderItem {
+  id      String @id @default(cuid())
+  orderId String @map("order_id")
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  productId   String  @map("product_id")
+  product     Product @relation(fields: [productId], references: [id])
+  // Snapshot del nombre/precio al momento de comprar.
+  // Si mañana sube el precio, el pedido historico no debe cambiar.
+  productName String  @map("product_name")
+  productFormat String @map("product_format")
+  quantity    Int
+  unitPrice   Int     @map("unit_price")
+  subtotal    Int
+
+  @@map("order_items")
+}
+
+// ---------------------------------------------------------------------
+// TRANSACCIONES WEBPAY
+// ---------------------------------------------------------------------
+// Idempotencia: el commit de Transbank es de un solo uso. Si el cliente
+// recarga la pagina de retorno, el PUT repetido devuelve 422/400.
+// Por eso registramos el token ANTES de llamar al commit, para poder
+// responder con el resultado guardado en vez de re-intentar.
+model WebpayTransaction {
+  id     String @id @default(cuid())
+  orderId String @map("order_id")
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  // Token entregado por Transbank al crear la transaccion
+  token       String? @unique
+  buyOrder    String  @map("buy_order")
+  sessionId   String  @map("session_id")
+  amount      Int
+  returnUrl   String  @map("return_url")
+
+  // INITIATED  = transaccion creada, esperando que el cliente pague
+  // COMMITTED   = commit ejecutado, tenemos respuesta de Transbank
+  // AUTHORIZED / REJECTED / ABORTED / TIMED_OUT
+  status      String  @default("INITIATED")
+
+  responseCode      Int?    @map("response_code")
+  authorizationCode String? @map("authorization_code")
+  cardNumber        String? @map("card_number")
+  paymentTypeCode   String? @map("payment_type_code")
+  installments      Int?
+  accountingDate    String? @map("accounting_date")
+  transactionDate   DateTime? @map("transaction_date")
+
+  // Snapshot crudo de la respuesta, para auditoria y soporte
+  rawResponse String? @map("raw_response")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([orderId])
+  @@index([status])
+  @@map("webpay_transactions")
+}
+
+// ---------------------------------------------------------------------
+// CORREO TRANSACCIONAL
+// ---------------------------------------------------------------------
+// Guarda cada email enviado con su resultado. En desarrollo cumple dos
+// funciones: permite leer el HTML exacto que recibio el cliente sin
+// configurar un servidor SMTP, y deja auditoria de lo que se le
+// notifico a cada comprador.
+model EmailLog {
+  id      String @id @default(cuid())
+  orderId String? @map("order_id")
+  order    Order?  @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  userId  String? @map("user_id")
+
+  // confirmacion_orden | factura | despacho | recuperacion_password
+  tipo        String
+  destinatario String
+  asunto      String
+
+  // enviado | fallido | simulado (guardado sin enviar)
+  estado String
+  error  String?
+
+  // En desarrollo se guarda el HTML para poder verlo en el navegador
+  htmlGuardado String? @map("html_guardado")
+
+  sentAt    DateTime  @default(now()) @map("sent_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([orderId])
+  @@index([destinatario])
+  @@index([tipo])
+  @@map("email_logs")
+}

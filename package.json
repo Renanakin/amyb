@@ -1,0 +1,41 @@
+{
+  "name": "amyb-ecommerce-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Monorepo E-commerce B2B HORECA & B2C para Amyb Distribuidora Gastronómica",
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces --if-present",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "dev:backend": "npm run dev --workspace=backend",
+    "build": "npm run build --workspaces --if-present",
+    "start:backend": "npm run start --workspace=backend",
+    "db:up": "docker compose -f docker-compose.yml -f compose.dev.yml up -d postgres",
+    "db:down": "docker compose -f docker-compose.yml -f compose.dev.yml stop postgres",
+    "db:studio": "npm run db:studio --workspace=backend",
+    "db:migrate": "npm run db:migrate --workspace=backend",
+    "db:seed": "npm run db:seed --workspace=backend",
+    "setup": "npm run configure && docker compose up --build -d",
+    "configure": "node scripts/configure.mjs",
+    "postinstall": "npm run db:generate --workspace=backend",
+    "db:generate": "npm run db:generate --workspace=backend",
+    "db:deploy": "npm run db:deploy --workspace=backend"
+  },
+  "keywords": [
+    "horeca",
+    "b2b",
+    "ecommerce",
+    "temuco",
+    "chile",
+    "gastronomia"
+  ],
+  "author": "Amyb Distribuidora",
+  "license": "ISC",
+  "engines": {
+    "node": ">=22 <25",
+    "npm": ">=10"
+  }
+}
