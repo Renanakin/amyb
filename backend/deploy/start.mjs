@@ -28,6 +28,10 @@ try {
    else console.log('[INICIO] Cuenta existente conservada; no se modifica su contraseña ni su rol.');
   }
  }finally{await prisma.$disconnect();}
+ if(process.argv.includes('--prepare-only')){
+  console.log('[INICIO] Preparación terminada; no se inicia el servidor.');
+  process.exit(0);
+ }
  const server=spawn(process.execPath,['dist/index.js'],{stdio:'inherit',env:process.env});
  for(const signal of ['SIGTERM','SIGINT'])process.on(signal,()=>server.kill(signal));
  server.on('error',error=>{console.error(error.message);process.exit(1);});

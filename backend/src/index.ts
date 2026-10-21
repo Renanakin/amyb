@@ -37,7 +37,8 @@ try {
 }
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = Number(process.env.PORT || 3001);
+const HOST = process.env.HOST || '0.0.0.0';
 
 // Lista de origenes permitidos. Antes era '*', que dejaba la API abierta
 // a cualquier sitio: cualquiera podia llamar a /api/orders desde su pagina.
@@ -122,8 +123,8 @@ app.get('/api/health', async (req: Request, res: Response) => {
 app.use(noEncontrado);
 app.use(manejadorDeErrores);
 
-app.listen(PORT, () => {
-  console.log(`[BACKEND] Amyb API corriendo en http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`[BACKEND] Amyb API corriendo en http://${HOST}:${PORT}`);
   console.log(`[BACKEND] Endpoints disponibles:`);
   console.log(`  - GET  /api/health`);
   console.log(`  - GET  /api/client-config`);

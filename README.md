@@ -90,4 +90,6 @@ El frontend conserva rutas de producto por SKU, historial, recuperación de cont
 
 Ver [DEPLOYMENT.md](DEPLOYMENT.md): configuración de proveedores, dominio HTTPS, persistencia, respaldo y despliegue sobre una instalación existente.
 
+Preparación específica del VPS Hackteck: [deploy/staging/README.md](deploy/staging/README.md).
+
 El repositorio incluye código y migraciones. Las credenciales, datos de clientes y pedidos no viajan con Git; se configuran o restauran de forma separada en cada entorno.

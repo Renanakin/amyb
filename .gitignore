@@ -30,6 +30,7 @@ Thumbs.db
 .idea/
 .kombai/
 .tmp*
+.artifacts/
 # Documentación comercial y privada del espacio local
 GUIA-CREDENCIALES*
 PRESUPUESTO*
